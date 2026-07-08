@@ -132,6 +132,25 @@ jobs:
               and requests Codex's re-review. Your only job is to edit the source files correctly.
             - If the findings section is empty or says "NO_INLINE_FINDINGS", make no changes.
 
+      # Diagnostic: dump what Claude actually did (tool calls, edited files, final message)
+      # from the action's saved transcript, plus the workspace state, so we can see whether
+      # Claude edited files (and where) or declined to change anything.
+      - name: Debug — what did Claude do
+        if: steps.cap.outputs.reached == '0'
+        run: |
+          F="${{ runner.temp }}/claude-execution-output.json"
+          echo "== transcript file =="; ls -l "$F" || echo "MISSING"
+          echo "== tool-use counts =="
+          jq -r '[.. | objects | select(.type=="tool_use") | .name] | group_by(.) | map("\(length)x \(.[0])")[]' "$F" 2>/dev/null || echo "(could not parse)"
+          echo "== files Claude edited/wrote =="
+          jq -r '.. | objects | select(.type=="tool_use" and (.name=="Edit" or .name=="MultiEdit" or .name=="Write")) | (.input.file_path // .input.path)' "$F" 2>/dev/null | sort -u || true
+          echo "== Claude final result text =="
+          jq -r '.. | objects | select(.type=="result") | (.result // .subtype)' "$F" 2>/dev/null | tail -50 || true
+          echo "== git status in workspace =="
+          git -C "$GITHUB_WORKSPACE" status --porcelain || true
+          echo "== .kt files modified in last 20 min anywhere under work dir =="
+          find /home/runner/work -name '*.kt' -newermt '-20 minutes' 2>/dev/null | head -20 || true
+
       # Commit whatever Claude edited, push it, and ask Codex to re-review. Doing this in an
       # explicit step (rather than relying on the action) makes `git status` visible in the log
       # and deterministic: no changes → loop ends; changes → push + re-review request.
