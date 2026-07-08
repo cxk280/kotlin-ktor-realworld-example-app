@@ -114,17 +114,35 @@ jobs:
 
                 ${{ runner.temp }}/CODEX_FINDINGS.md
 
-            Read that file FIRST, then:
-            - Address each finding with a minimal, correctly-scoped edit on the current PR
-              branch. Do not make unrelated changes.
-            - If a finding is wrong, already handled, or not worth doing, skip it and briefly
-              say why — do not force a change.
-            - Do NOT run the full Gradle build or test suite. It is slow and CI already runs it;
-              spend your turns making correct edits, not on local verification.
-            - If the file contains only "NO_INLINE_FINDINGS", there is nothing to do: reply that
-              the review had no actionable items, do NOT commit, and do NOT post the marker.
-            - Otherwise commit your changes with a clear message and push, then post exactly ONE
-              PR comment that (1) begins with `@codex review` (requests Codex's re-review) and
-              (2) contains this HTML marker on its own line: <!-- codex-loop-round -->
-              The marker is how the workflow counts rounds — always include it when you push a fix.
-            - CODEX_FINDINGS.md lives outside the repo, so it will not be committed.
+            Read that file FIRST, then edit the code to fix each finding:
+            - Make minimal, correctly-scoped edits on the checked-out PR branch. No unrelated changes.
+            - If a finding is genuinely wrong, already handled, or not worth doing, leave it and
+              briefly explain why in your final message.
+            - Do NOT run the full Gradle build or test suite — it is slow and CI already runs it.
+            - Do NOT run git and do NOT post any PR comment. A later workflow step commits, pushes,
+              and requests Codex's re-review. Your only job is to edit the source files correctly.
+            - CODEX_FINDINGS.md is outside the repo; do not modify or commit it.
+
+      # Commit whatever Claude edited, push it, and ask Codex to re-review. Doing this in an
+      # explicit step (rather than relying on the action) makes `git status` visible in the log
+      # and deterministic: no changes → loop ends; changes → push + re-review request.
+      - name: Commit fixes, push, request re-review
+        if: steps.cap.outputs.reached == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          git config user.name "claude-code-bot"
+          git config user.email "claude-code-bot@users.noreply.github.com"
+          echo "== git status (what Claude changed) =="
+          git status --porcelain
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Claude made no code changes — nothing to commit; loop ends here."
+            exit 0
+          fi
+          git add -A
+          git commit -m "fix: address Codex review findings"
+          git push origin "HEAD:${HEAD_REF}"
+          printf '@codex review\n\n<!-- codex-loop-round -->\n' | gh pr comment "$PR" --body-file -
+          echo "committed, pushed, and requested Codex re-review"
