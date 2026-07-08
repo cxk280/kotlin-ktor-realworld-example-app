@@ -1,0 +1,80 @@
+name: Claude — address Codex review
+
+# Fires whenever a review is submitted on a PR (Codex posts its automated review
+# as a "review"). Claude reads the review, fixes the code on the PR branch, pushes,
+# and pings Codex for a re-review — looping until Codex is satisfied or the cap is hit.
+on:
+  pull_request_review:
+    types: [submitted]
+
+# If a newer review lands while Claude is still working, cancel the stale run.
+concurrency:
+  group: claude-codex-loop-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write        # commit & push fixes to the PR branch
+  pull-requests: write   # comment on the PR
+  issues: write
+
+jobs:
+  address-review:
+    # Never react to Claude's own activity, and only act on reviews that actually
+    # say something (changes requested or commented — not a bare approval).
+    if: >
+      github.event.review.user.login != 'claude[bot]' &&
+      (github.event.review.state == 'changes_requested' || github.event.review.state == 'commented')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      # Loop guard: count how many auto-fix rounds have already happened on this PR
+      # by counting Claude's marker comments. Stop after 3.
+      - name: Enforce 3-round cap
+        id: cap
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          ROUNDS=$(gh pr view "$PR" --json comments \
+            --jq '[.comments[].body | select(contains("<!-- codex-loop-round -->"))] | length')
+          echo "auto-fix rounds so far: $ROUNDS"
+          if [ "$ROUNDS" -ge 3 ]; then
+            echo "reached=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "reached=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Announce the cap and pause
+        if: steps.cap.outputs.reached == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR" --body "🛑 Reached the 3-round Codex⇄Claude auto-fix cap. Pausing automated fixes so a human can weigh in. Comment \`@claude\` to resume manually, or merge if it's ready."
+
+      - name: Address the Codex feedback
+        if: steps.cap.outputs.reached == '0'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: "--max-turns 15"
+          prompt: |
+            OpenAI Codex (a reviewer) submitted this review on the pull request:
+
+            ---
+            ${{ github.event.review.body }}
+            ---
+
+            Your job is to resolve it:
+            - Make the necessary code changes on the current PR branch and commit them with a clear message. Keep the change scoped to the review — no unrelated edits.
+            - If a point is wrong, already handled, or not worth doing, do NOT change code for it; briefly explain why in your reply.
+            - When you have made and pushed at least one fix, post exactly ONE PR comment that:
+                (1) begins with `@codex review` (this requests Codex's re-review), and
+                (2) contains the literal HTML marker on its own line: <!-- codex-loop-round -->
+              The marker is how the workflow counts rounds — always include it when you push a fix.
+            - If there is NOTHING actionable to change, do not commit and do NOT post the marker; just reply that the review had no actionable items so the loop ends.
