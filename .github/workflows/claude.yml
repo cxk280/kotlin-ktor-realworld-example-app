@@ -80,6 +80,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Pass the built-in token so the action uses it directly for git/API and
+          # never tries the OIDC token exchange (which needs id-token: write and was failing).
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: "--max-turns 15"
           prompt: |
             OpenAI Codex (a reviewer) submitted this review on the pull request:
