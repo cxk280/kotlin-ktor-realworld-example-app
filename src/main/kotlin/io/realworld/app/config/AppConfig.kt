@@ -19,6 +19,8 @@ import io.ktor.server.engine.EngineAPI
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.util.KtorExperimentalAPI
+import io.realworld.app.domain.exceptions.NotFoundException
+import io.realworld.app.domain.exceptions.UnauthorizedException
 import io.realworld.app.utils.JwtProvider
 import io.realworld.app.web.ErrorResponse
 import io.realworld.app.web.articles
@@ -80,10 +82,20 @@ fun Application.mainModule() {
         }
     }
     install(StatusPages) {
-        exception(Exception::class.java) {
-            val errorResponse = ErrorResponse(mapOf("error" to listOf("detail", this.toString())))
+        exception(NotFoundException::class.java) { cause ->
+            context.respond(HttpStatusCode.NotFound, ErrorResponse(mapOf("body" to listOf(cause.message))))
+        }
+        exception(UnauthorizedException::class.java) { cause ->
+            context.respond(HttpStatusCode.Unauthorized, ErrorResponse(mapOf("body" to listOf(cause.message))))
+        }
+        exception(IllegalArgumentException::class.java) { cause ->
+            // 422 Unprocessable Entity — invalid input (e.g. bad pagination params, missing fields)
+            context.respond(HttpStatusCode(422, "Unprocessable Entity"), ErrorResponse(mapOf("body" to listOf(cause.message))))
+        }
+        exception(Exception::class.java) { cause ->
             context.respond(
-                HttpStatusCode.InternalServerError, errorResponse
+                HttpStatusCode.InternalServerError,
+                ErrorResponse(mapOf("body" to listOf(cause.message ?: cause.toString())))
             )
         }
     }
