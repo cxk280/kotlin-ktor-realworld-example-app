@@ -79,12 +79,12 @@ jobs:
       # (which is just a generic header). Collect the inline comments attached to the
       # review that triggered this run into a file, outside the repo so it isn't committed.
       - name: Collect Codex findings
+        id: findings
         if: steps.cap.outputs.reached == '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           REVIEW_ID: ${{ github.event.review.id }}
-          OUT: ${{ runner.temp }}/CODEX_FINDINGS.md
         run: |
           gh api --paginate "repos/${{ github.repository }}/pulls/$PR/comments" > "${{ runner.temp }}/comments.json"
           jq -r --arg rid "$REVIEW_ID" '
@@ -92,9 +92,16 @@ jobs:
             | if ($f | length) == 0 then "NO_INLINE_FINDINGS"
               else ( $f[] | "## " + .path + " (line " + ((.line // .original_line // 0)|tostring) + ")\n\n" + .body + "\n" )
               end
-          ' "${{ runner.temp }}/comments.json" > "$OUT"
-          echo "wrote findings to $OUT:"
-          sed -n '1,40p' "$OUT"
+          ' "${{ runner.temp }}/comments.json" > "${{ runner.temp }}/findings.md"
+          echo "== collected findings =="
+          cat "${{ runner.temp }}/findings.md"
+          # Expose the findings text as a step output so the prompt can embed it inline
+          # (Claude's file tools are sandboxed to the repo, so it cannot read runner.temp).
+          {
+            echo "text<<CODEX_FINDINGS_HEREDOC_EOF"
+            cat "${{ runner.temp }}/findings.md"
+            echo "CODEX_FINDINGS_HEREDOC_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Address the Codex feedback
         if: steps.cap.outputs.reached == '0'
@@ -109,19 +116,21 @@ jobs:
           allowed_bots: "chatgpt-codex-connector"
           claude_args: "--max-turns 40"
           prompt: |
-            OpenAI Codex reviewed this pull request. Its specific, actionable findings —
-            each with a file path, a line number, and a description — are in this file:
+            OpenAI Codex reviewed this pull request and flagged the issues below. Each entry
+            has a file path, a line number, and a description of the problem to fix.
 
-                ${{ runner.temp }}/CODEX_FINDINGS.md
+            === CODEX FINDINGS ===
+            ${{ steps.findings.outputs.text }}
+            === END FINDINGS ===
 
-            Read that file FIRST, then edit the code to fix each finding:
+            Edit the code in this repository to fix each finding:
             - Make minimal, correctly-scoped edits on the checked-out PR branch. No unrelated changes.
             - If a finding is genuinely wrong, already handled, or not worth doing, leave it and
               briefly explain why in your final message.
             - Do NOT run the full Gradle build or test suite — it is slow and CI already runs it.
             - Do NOT run git and do NOT post any PR comment. A later workflow step commits, pushes,
               and requests Codex's re-review. Your only job is to edit the source files correctly.
-            - CODEX_FINDINGS.md is outside the repo; do not modify or commit it.
+            - If the findings section is empty or says "NO_INLINE_FINDINGS", make no changes.
 
       # Commit whatever Claude edited, push it, and ask Codex to re-review. Doing this in an
       # explicit step (rather than relying on the action) makes `git status` visible in the log
