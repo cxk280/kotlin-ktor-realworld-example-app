@@ -1,10 +1,5 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-# This workflow will build a Java project with Gradle and cache/restore any dependencies to improve the workflow execution time
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-java-with-gradle
-
+# Builds and tests the app on every push/PR to master, across a JDK 17 + 21 matrix,
+# caches Gradle dependencies, and publishes JUnit results as check annotations.
 name: CI with Gradle
 
 on:
@@ -15,21 +10,35 @@ on:
 
 permissions:
   contents: read
+  checks: write        # required for the JUnit report to publish check annotations
+  pull-requests: write # allow the report to comment on PRs
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        jdk: [ 17, 21 ]
+
+    name: build (JDK ${{ matrix.jdk }})
 
     steps:
-    - uses: actions/checkout@v3
-    - name: Set up JDK
-      uses: actions/setup-java@v3
-      with:
-        java-version: '16'
-        distribution: temurin
-    - name: Setup Gradle
-      uses: gradle/gradle-build-action@v2
-    
-    - name: Execute Gradle build
-      run: ./gradlew build
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ matrix.jdk }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ matrix.jdk }}
+          distribution: temurin
+          cache: gradle   # cache Gradle dependencies between runs
+
+      - name: Build & test
+        run: ./gradlew build --no-daemon
+
+      - name: Publish test report
+        uses: mikepenz/action-junit-report@v4
+        if: always()      # publish results even when tests fail
+        with:
+          report_paths: '**/build/test-results/test/TEST-*.xml'
+          check_name: JUnit Tests (JDK ${{ matrix.jdk }})
