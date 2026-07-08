@@ -14,7 +14,9 @@ on:
 # If a newer review lands while Claude is still working, cancel the stale run.
 concurrency:
   group: claude-codex-loop-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  # Queue overlapping runs instead of cancelling — cancelling mid-run would kill
+  # Claude while it is editing files and lose the work.
+  cancel-in-progress: false
 
 permissions:
   contents: write        # commit & push fixes to the PR branch
@@ -75,6 +77,13 @@ jobs:
         run: |
           gh pr comment "$PR" --body "🛑 Reached the 3-round Codex⇄Claude auto-fix cap. Pausing automated fixes so a human can weigh in. Comment \`@claude\` to resume manually, or merge if it's ready."
 
+      # Remember where the branch was before Claude ran, so the commit step can tell
+      # whether anything advanced it (whether the action auto-commits or we do).
+      - name: Record base SHA
+        id: base
+        if: steps.cap.outputs.reached == '0'
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       # Codex's ACTIONABLE findings are inline review comments, not the review body
       # (which is just a generic header). Collect the inline comments attached to the
       # review that triggered this run into a file, outside the repo so it isn't committed.
@@ -114,7 +123,10 @@ jobs:
           # This loop is intentionally triggered by a bot (Codex). The action blocks
           # bot-initiated runs by default, so explicitly allow the Codex reviewer.
           allowed_bots: "chatgpt-codex-connector"
-          claude_args: "--max-turns 40"
+          # The edit tools ARE available, but the action denies writes unless we grant edit
+          # permission non-interactively. Without this, Claude burns turns trying to edit and
+          # every Edit/Write is refused ("you haven't granted it yet"), producing zero changes.
+          claude_args: "--max-turns 40 --permission-mode acceptEdits"
           prompt: |
             OpenAI Codex reviewed this pull request and flagged the issues below. Each entry
             has a file path, a line number, and a description of the problem to fix.
@@ -151,26 +163,32 @@ jobs:
           echo "== .kt files modified in last 20 min anywhere under work dir =="
           find /home/runner/work -name '*.kt' -newermt '-20 minutes' 2>/dev/null | head -20 || true
 
-      # Commit whatever Claude edited, push it, and ask Codex to re-review. Doing this in an
-      # explicit step (rather than relying on the action) makes `git status` visible in the log
-      # and deterministic: no changes → loop ends; changes → push + re-review request.
+      # Commit + push Claude's edits and ask Codex to re-review. Hardened to work whether
+      # Claude's changes are left in the working tree (we commit them) OR the action already
+      # committed them (we just push + detect the advance). Deterministic and logged.
       - name: Commit fixes, push, request re-review
         if: steps.cap.outputs.reached == '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
           git config user.name "claude-code-bot"
           git config user.email "claude-code-bot@users.noreply.github.com"
-          echo "== git status (what Claude changed) =="
+          echo "== git status (working tree) =="
           git status --porcelain
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "Claude made no code changes — nothing to commit; loop ends here."
-            exit 0
+          # Commit any uncommitted edits Claude left behind.
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "fix: address Codex review findings"
           fi
-          git add -A
-          git commit -m "fix: address Codex review findings"
-          git push origin "HEAD:${HEAD_REF}"
-          printf '@codex review\n\n<!-- codex-loop-round -->\n' | gh pr comment "$PR" --body-file -
-          echo "committed, pushed, and requested Codex re-review"
+          # Push whatever local commits exist that the remote doesn't have (no-op if none).
+          git push origin "HEAD:${HEAD_REF}" || true
+          # If the branch advanced (by our commit or the action's), request a re-review.
+          if [ "$(git rev-parse HEAD)" != "$BASE_SHA" ]; then
+            printf '@codex review\n\n<!-- codex-loop-round -->\n' | gh pr comment "$PR" --body-file -
+            echo "pushed $(git rev-parse --short HEAD) and requested Codex re-review"
+          else
+            echo "Claude made no code changes — nothing to push; loop ends here."
+          fi
