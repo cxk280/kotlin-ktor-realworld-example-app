@@ -1,9 +1,13 @@
 name: Claude — address Codex review
 
-# Fires whenever a review is submitted on a PR (Codex posts its automated review
-# as a "review"). Claude reads the review, fixes the code on the PR branch, pushes,
-# and pings Codex for a re-review — looping until Codex is satisfied or the cap is hit.
+# Two responsibilities:
+#  1. When a PR opens, ask Codex to review it (Codex's own automatic reviews aren't
+#     firing on this repo, so we request one explicitly with an `@codex review` comment).
+#  2. When a review is submitted, have Claude fix the code, push, and request a
+#     re-review — looping until Codex is satisfied or the 3-round cap is hit.
 on:
+  pull_request:
+    types: [opened, reopened]
   pull_request_review:
     types: [submitted]
 
@@ -18,10 +22,23 @@ permissions:
   issues: write
 
 jobs:
+  # ── Bootstrap: kick off the first Codex review when the PR opens ──────────────
+  request-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask Codex to review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR" --repo "${{ github.repository }}" --body "@codex review"
+
+  # ── Loop: address a submitted review, push a fix, ask for a re-review ─────────
   address-review:
-    # Never react to Claude's own activity, and only act on reviews that actually
-    # say something (changes requested or commented — not a bare approval).
+    # Only act on real review events (never on Claude's own activity), and only on
+    # reviews that say something (changes requested / commented — not a bare approval).
     if: >
+      github.event_name == 'pull_request_review' &&
       github.event.review.user.login != 'claude[bot]' &&
       (github.event.review.state == 'changes_requested' || github.event.review.state == 'commented')
     runs-on: ubuntu-latest
