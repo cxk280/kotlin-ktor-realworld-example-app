@@ -75,6 +75,27 @@ jobs:
         run: |
           gh pr comment "$PR" --body "🛑 Reached the 3-round Codex⇄Claude auto-fix cap. Pausing automated fixes so a human can weigh in. Comment \`@claude\` to resume manually, or merge if it's ready."
 
+      # Codex's ACTIONABLE findings are inline review comments, not the review body
+      # (which is just a generic header). Collect the inline comments attached to the
+      # review that triggered this run into a file, outside the repo so it isn't committed.
+      - name: Collect Codex findings
+        if: steps.cap.outputs.reached == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          OUT: ${{ runner.temp }}/CODEX_FINDINGS.md
+        run: |
+          gh api --paginate "repos/${{ github.repository }}/pulls/$PR/comments" > "${{ runner.temp }}/comments.json"
+          jq -r --arg rid "$REVIEW_ID" '
+            ([ .[] | select((.pull_request_review_id|tostring) == $rid) ]) as $f
+            | if ($f | length) == 0 then "NO_INLINE_FINDINGS"
+              else ( $f[] | "## " + .path + " (line " + ((.line // .original_line // 0)|tostring) + ")\n\n" + .body + "\n" )
+              end
+          ' "${{ runner.temp }}/comments.json" > "$OUT"
+          echo "wrote findings to $OUT:"
+          sed -n '1,40p' "$OUT"
+
       - name: Address the Codex feedback
         if: steps.cap.outputs.reached == '0'
         uses: anthropics/claude-code-action@v1
@@ -88,17 +109,22 @@ jobs:
           allowed_bots: "chatgpt-codex-connector"
           claude_args: "--max-turns 40"
           prompt: |
-            OpenAI Codex (a reviewer) submitted this review on the pull request:
+            OpenAI Codex reviewed this pull request. Its specific, actionable findings —
+            each with a file path, a line number, and a description — are in this file:
 
-            ---
-            ${{ github.event.review.body }}
-            ---
+                ${{ runner.temp }}/CODEX_FINDINGS.md
 
-            Your job is to resolve it:
-            - Make the necessary code changes on the current PR branch and commit them with a clear message. Keep the change scoped to the review — no unrelated edits.
-            - If a point is wrong, already handled, or not worth doing, do NOT change code for it; briefly explain why in your reply.
-            - When you have made and pushed at least one fix, post exactly ONE PR comment that:
-                (1) begins with `@codex review` (this requests Codex's re-review), and
-                (2) contains the literal HTML marker on its own line: <!-- codex-loop-round -->
+            Read that file FIRST, then:
+            - Address each finding with a minimal, correctly-scoped edit on the current PR
+              branch. Do not make unrelated changes.
+            - If a finding is wrong, already handled, or not worth doing, skip it and briefly
+              say why — do not force a change.
+            - Do NOT run the full Gradle build or test suite. It is slow and CI already runs it;
+              spend your turns making correct edits, not on local verification.
+            - If the file contains only "NO_INLINE_FINDINGS", there is nothing to do: reply that
+              the review had no actionable items, do NOT commit, and do NOT post the marker.
+            - Otherwise commit your changes with a clear message and push, then post exactly ONE
+              PR comment that (1) begins with `@codex review` (requests Codex's re-review) and
+              (2) contains this HTML marker on its own line: <!-- codex-loop-round -->
               The marker is how the workflow counts rounds — always include it when you push a fix.
-            - If there is NOTHING actionable to change, do not commit and do NOT post the marker; just reply that the review had no actionable items so the loop ends.
+            - CODEX_FINDINGS.md lives outside the repo, so it will not be committed.
