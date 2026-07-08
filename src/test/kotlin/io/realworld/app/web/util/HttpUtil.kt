@@ -37,6 +37,11 @@ class HttpUtil(port: Int) {
     inline fun <reified T> get(path: String, params: Map<String, Any>? = null) =
         Unirest.get(origin + path).headers(headers).queryString(params).asObject(T::class.java)
 
+    // Raw string GET — use to assert on error responses (401/422) whose bodies can't be
+    // deserialized into the success DTO.
+    fun getString(path: String): HttpResponse<String> =
+        Unirest.get(origin + path).headers(headers).asString()
+
     inline fun <reified T> put(path: String, body: Any) =
         Unirest.put(origin + path).headers(headers).body(body).asObject(T::class.java)
 
