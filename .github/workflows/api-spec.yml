@@ -1,0 +1,62 @@
+# (Bonus) Runs the RealWorld Conduit Postman/Newman spec suite against the running server.
+#
+# NOTE: this is intentionally INFORMATIONAL and non-blocking (continue-on-error). The Postman
+# collection exercises the *entire* RealWorld API, but this codebase only implements a subset
+# (users, tags, and the article create/favorite/popular-feed slice added in this PR) — the rest
+# of the controllers are still stubs. A full green run is therefore not expected yet; the job
+# exists to make the remaining spec gaps visible as the app is filled in.
+name: API Spec (Newman) — informational
+
+on:
+  workflow_dispatch:      # run on demand
+  push:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+
+jobs:
+  api-spec:
+    runs-on: ubuntu-latest
+    continue-on-error: true   # never blocks the pipeline
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+          cache: gradle
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build application
+        run: ./gradlew installDist --no-daemon
+
+      - name: Start server
+        run: |
+          ./build/install/api/bin/api &
+          echo "SERVER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for server on :8080
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/tags >/dev/null 2>&1; then
+              echo "server is up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "server did not become ready in time" >&2
+          exit 1
+
+      - name: Run RealWorld API spec (Newman)
+        run: APIURL=http://localhost:8080/api ./spec-api/run-api-tests.sh
+
+      - name: Stop server
+        if: always()
+        run: kill "$SERVER_PID" || true
