@@ -86,7 +86,7 @@ jobs:
           # This loop is intentionally triggered by a bot (Codex). The action blocks
           # bot-initiated runs by default, so explicitly allow the Codex reviewer.
           allowed_bots: "chatgpt-codex-connector"
-          claude_args: "--max-turns 15"
+          claude_args: "--max-turns 40"
           prompt: |
             OpenAI Codex (a reviewer) submitted this review on the pull request:
 
