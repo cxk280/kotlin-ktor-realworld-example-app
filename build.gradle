@@ -3,13 +3,17 @@ version '1.0-SNAPSHOT'
 
 buildscript {
     ext {
-        kotlin_version = "1.3.+"
+        kotlin_version = "1.9.24"
         slf4j_version = "2.0.9"
         ktor_version = "1.2.3"
         kodein_version = "6.1.0"
         hikaricp_version = "5.1.0"
         h2_version = "2.2.224"
-        exposed_version = "0.14.1"
+        // Exposed bumped from the jcenter-only 0.14.1 to a modern release. Old Exposed targets H2
+        // 1.4.x (gone from Maven Central via jcenter's shutdown), and H2 1.4.200 itself NPEs on JDK
+        // 15+ — so the only combination that both resolves and runs on the required JDK 17/21 is
+        // modern Exposed (0.44.1, split artifacts) with H2 2.2.224.
+        exposed_version = "0.44.1"
         junit_version = "4.13.2"
         unirest_version = "1.4.9"
     }
@@ -17,7 +21,6 @@ buildscript {
     repositories {
         mavenLocal()
         mavenCentral()
-        jcenter()
     }
     dependencies {
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
@@ -25,13 +28,24 @@ buildscript {
 }
 
 apply plugin: 'kotlin'
+apply plugin: 'java-library'
 apply plugin: 'application'
-mainClassName = "io.realworld.app.AppKt"
+
+application {
+    mainClass = "io.realworld.app.AppKt"
+}
+
+// Pin Java bytecode to 17 as well, so compileJava and compileKotlin agree regardless of whether the
+// build runs on the JDK 17 or JDK 21 CI leg (both produce portable 17 bytecode; tests still run on
+// each leg's actual JDK runtime).
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
 
 repositories {
     mavenLocal()
     mavenCentral()
-    jcenter()
 }
 
 dependencies {
@@ -44,8 +58,24 @@ dependencies {
     implementation "org.kodein.di:kodein-di-generic-jvm:$kodein_version"
     api "com.zaxxer:HikariCP:$hikaricp_version"
     api "com.h2database:h2:$h2_version"
-    api "org.jetbrains.exposed:exposed:$exposed_version"
+    api "org.jetbrains.exposed:exposed-core:$exposed_version"
+    api "org.jetbrains.exposed:exposed-dao:$exposed_version"
+    api "org.jetbrains.exposed:exposed-jdbc:$exposed_version"
 
-    testCompile "junit:junit:$junit_version"
-    testCompile "com.mashape.unirest:unirest-java:$unirest_version"
+    testImplementation "junit:junit:$junit_version"
+    testImplementation "com.mashape.unirest:unirest-java:$unirest_version"
+}
+
+// Target JDK 17 bytecode so the same build runs on both the JDK 17 and JDK 21 CI matrix legs.
+compileKotlin {
+    kotlinOptions.jvmTarget = "17"
+}
+compileTestKotlin {
+    kotlinOptions.jvmTarget = "17"
+}
+
+test {
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
 }

@@ -36,3 +36,6 @@ build/
 #System Files
 .DS_Store
 Thumbs.db
+
+# Local exercise brief — not part of the deliverable
+INSTRUCTIONS.md
