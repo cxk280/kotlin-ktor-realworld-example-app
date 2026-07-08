@@ -20,6 +20,7 @@ permissions:
   contents: write        # commit & push fixes to the PR branch
   pull-requests: write   # comment on the PR
   issues: write
+  id-token: write        # required: claude-code-action mints its GitHub token via OIDC
 
 jobs:
   # ── Bootstrap: kick off the first Codex review when the PR opens ──────────────
